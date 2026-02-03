@@ -8,6 +8,7 @@ import { hash, secret, uuid } from '@/lib/crypto';
 import { getClientInfo, hasBlockedIp } from '@/lib/detect';
 import { createToken, parseToken } from '@/lib/jwt';
 import { fetchWebsite } from '@/lib/load';
+import { getRateLimiter, createRateLimitResponse } from '@/lib/rate-limiter';
 import { parseRequest } from '@/lib/request';
 import { badRequest, forbidden, json, serverError } from '@/lib/response';
 import { anyObjectParam, urlOrPathParam } from '@/lib/schema';
@@ -111,11 +112,26 @@ export async function POST(request: Request) {
       }
     }
 
-    // Client info
+    // Client info (get basic info first for rate limiting)
     const { ip, userAgent, device, browser, os, country, region, city } = await getClientInfo(
       request,
       payload,
     );
+
+    // Rate limiting check
+    if (!process.env.DISABLE_RATE_LIMITING) {
+      const rateLimiter = getRateLimiter();
+      const rateLimitResult = await rateLimiter.checkRequest({
+        ip,
+        userAgent,
+        payload,
+        timestamp: Date.now(),
+      });
+
+      if (!rateLimitResult.allowed) {
+        return createRateLimitResponse(rateLimitResult);
+      }
+    }
 
     // Bot check
     if (!process.env.DISABLE_BOT_CHECK && isbot(userAgent)) {
