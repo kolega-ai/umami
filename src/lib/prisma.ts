@@ -2,7 +2,7 @@ import { PrismaPg } from '@prisma/adapter-pg';
 import { readReplicas } from '@prisma/extension-read-replicas';
 import debug from 'debug';
 import { PrismaClient } from '@/generated/prisma/client';
-import { DEFAULT_PAGE_SIZE, FILTER_COLUMNS, OPERATORS, SESSION_COLUMNS } from './constants';
+import { DEFAULT_PAGE_SIZE, FILTER_COLUMNS, OPERATORS, SESSION_COLUMNS, UNIT_TYPES } from './constants';
 import { filtersObjectToArray } from './params';
 import type { Operator, QueryFilters, QueryOptions } from './types';
 
@@ -18,6 +18,50 @@ const PRISMA_LOG_OPTIONS = {
     },
   ],
 };
+
+// Security: Valid database field names based on schema analysis
+const VALID_FIELD_NAMES = new Set([
+  'created_at',
+  'date_value',
+  'website_event.created_at',
+  'session.created_at',
+  'revenue.created_at',
+  'event_data.created_at',
+  'session_data.created_at',
+]);
+
+// Security: Valid timezones - comprehensive list of PostgreSQL-compatible timezones
+const VALID_TIMEZONES = new Set([
+  'UTC', 'GMT', 
+  // Americas
+  'America/New_York', 'America/Chicago', 'America/Denver', 'America/Los_Angeles',
+  'America/Toronto', 'America/Vancouver', 'America/Mexico_City', 'America/Sao_Paulo',
+  'America/Argentina/Buenos_Aires', 'America/Lima', 'America/Bogota',
+  // Europe
+  'Europe/London', 'Europe/Paris', 'Europe/Berlin', 'Europe/Rome', 'Europe/Madrid',
+  'Europe/Amsterdam', 'Europe/Brussels', 'Europe/Vienna', 'Europe/Stockholm',
+  'Europe/Copenhagen', 'Europe/Helsinki', 'Europe/Warsaw', 'Europe/Prague',
+  'Europe/Budapest', 'Europe/Zurich', 'Europe/Athens', 'Europe/Istanbul',
+  'Europe/Moscow', 'Europe/Kiev', 'Europe/Bucharest', 'Europe/Sofia',
+  // Asia
+  'Asia/Tokyo', 'Asia/Shanghai', 'Asia/Hong_Kong', 'Asia/Singapore',
+  'Asia/Seoul', 'Asia/Bangkok', 'Asia/Jakarta', 'Asia/Manila',
+  'Asia/Mumbai', 'Asia/Kolkata', 'Asia/Dhaka', 'Asia/Karachi',
+  'Asia/Dubai', 'Asia/Tehran', 'Asia/Baghdad', 'Asia/Riyadh',
+  // Australia/Pacific
+  'Australia/Sydney', 'Australia/Melbourne', 'Australia/Brisbane', 'Australia/Perth',
+  'Australia/Adelaide', 'Australia/Darwin', 'Australia/Hobart',
+  'Pacific/Auckland', 'Pacific/Fiji', 'Pacific/Honolulu', 'Pacific/Tahiti',
+  // Africa
+  'Africa/Cairo', 'Africa/Lagos', 'Africa/Johannesburg', 'Africa/Nairobi',
+  'Africa/Casablanca', 'Africa/Tunis', 'Africa/Algiers',
+]);
+
+// Security: Regex for numeric timezone offsets (+03:00, -0530, etc.)
+const TIMEZONE_OFFSET_REGEX = /^[+-](?:0[0-9]|1[0-4])(?::?[0-5][0-9])?$/;
+
+// Security: Valid date units (uses existing UNIT_TYPES constant)
+const VALID_DATE_UNITS = new Set(UNIT_TYPES);
 
 const DATE_FORMATS = {
   minute: 'YYYY-MM-DD HH24:MI:00',
@@ -35,6 +79,92 @@ const DATE_FORMATS_UTC = {
   year: 'YYYY-01-01"T"HH24:00:00"Z"',
 };
 
+/**
+ * Security: Escape PostgreSQL string literals by doubling single quotes
+ */
+function escapePostgreSQLString(str: string): string {
+  if (typeof str !== 'string') {
+    throw new Error('Input must be a string');
+  }
+  
+  // Escape single quotes by doubling them (PostgreSQL standard)
+  // Remove potentially dangerous characters that could break SQL syntax
+  return str
+    .replace(/'/g, "''")
+    .replace(/[\\;`\0\n\r\x1a]/g, ''); // Remove backslash, semicolon, backtick, null, newlines, substitute
+}
+
+/**
+ * Security: Validate field name parameter against whitelist
+ * Prevents SQL injection through field parameter
+ */
+function validateFieldName(field: string): string {
+  if (!field || typeof field !== 'string') {
+    log('Security: Invalid field name type attempted:', typeof field);
+    throw new Error('Field name is required and must be a string');
+  }
+  
+  const trimmedField = field.trim();
+  
+  if (!VALID_FIELD_NAMES.has(trimmedField)) {
+    log('Security: Invalid field name attempted:', trimmedField);
+    throw new Error(`Invalid field name: ${trimmedField}. Must be a valid database field.`);
+  }
+  
+  return trimmedField;
+}
+
+/**
+ * Security: Validate date unit parameter against allowed values
+ * Prevents SQL injection through unit parameter
+ */
+function validateDateUnit(unit: string): string {
+  if (!unit || typeof unit !== 'string') {
+    log('Security: Invalid date unit type attempted:', typeof unit);
+    throw new Error('Date unit is required and must be a string');
+  }
+  
+  const trimmedUnit = unit.trim().toLowerCase();
+  
+  if (!VALID_DATE_UNITS.has(trimmedUnit)) {
+    log('Security: Invalid date unit attempted:', trimmedUnit);
+    throw new Error(`Invalid date unit: ${trimmedUnit}. Must be one of: ${Array.from(VALID_DATE_UNITS).join(', ')}`);
+  }
+  
+  return trimmedUnit;
+}
+
+/**
+ * Security: Validate timezone parameter against whitelist
+ * Prevents SQL injection through timezone parameter
+ */
+function validateTimezone(timezone?: string): string | undefined {
+  if (!timezone) {
+    return timezone; // undefined/empty is valid (uses server default)
+  }
+  
+  if (typeof timezone !== 'string') {
+    log('Security: Invalid timezone type attempted:', typeof timezone);
+    throw new Error('Timezone must be a string');
+  }
+  
+  const trimmedTimezone = timezone.trim();
+  
+  // Check against whitelist of valid timezones
+  if (VALID_TIMEZONES.has(trimmedTimezone)) {
+    return trimmedTimezone;
+  }
+  
+  // Check if it's a valid numeric offset format
+  if (TIMEZONE_OFFSET_REGEX.test(trimmedTimezone)) {
+    return trimmedTimezone;
+  }
+  
+  // Log security event for monitoring
+  log('Security: Invalid timezone attempted:', trimmedTimezone);
+  throw new Error(`Invalid timezone: ${trimmedTimezone}. Must be a valid IANA timezone identifier or numeric offset.`);
+}
+
 function getAddIntervalQuery(field: string, interval: string): string {
   return `${field} + interval '${interval}'`;
 }
@@ -48,15 +178,35 @@ function getCastColumnQuery(field: string, type: string): string {
 }
 
 function getDateSQL(field: string, unit: string, timezone?: string): string {
-  if (timezone && timezone !== 'utc') {
-    return `to_char(date_trunc('${unit}', ${field} at time zone '${timezone}'), '${DATE_FORMATS[unit]}')`;
+  // Security: Validate and sanitize all user inputs to prevent SQL injection
+  const validField = validateFieldName(field);
+  const validUnit = validateDateUnit(unit);
+  const validTimezone = validateTimezone(timezone);
+
+  // Get the format string from our controlled object
+  const format = validTimezone && validTimezone !== 'utc' ? DATE_FORMATS[validUnit] : DATE_FORMATS_UTC[validUnit];
+
+  if (validTimezone && validTimezone !== 'utc') {
+    // Security: Escape the validated timezone as additional defense
+    const escapedTimezone = escapePostgreSQLString(validTimezone);
+    return `to_char(date_trunc('${validUnit}', ${validField} at time zone '${escapedTimezone}'), '${format}')`;
   }
 
-  return `to_char(date_trunc('${unit}', ${field}), '${DATE_FORMATS_UTC[unit]}')`;
+  return `to_char(date_trunc('${validUnit}', ${validField}), '${format}')`;
 }
 
 function getDateWeeklySQL(field: string, timezone?: string) {
-  return `concat(extract(dow from (${field} at time zone '${timezone}')), ':', to_char((${field} at time zone '${timezone}'), 'HH24'))`;
+  // Security: Validate and sanitize all user inputs to prevent SQL injection
+  const validField = validateFieldName(field);
+  const validTimezone = validateTimezone(timezone);
+
+  if (validTimezone) {
+    // Security: Escape the validated timezone as additional defense
+    const escapedTimezone = escapePostgreSQLString(validTimezone);
+    return `concat(extract(dow from (${validField} at time zone '${escapedTimezone}')), ':', to_char((${validField} at time zone '${escapedTimezone}'), 'HH24'))`;
+  }
+
+  return `concat(extract(dow from ${validField}), ':', to_char(${validField}, 'HH24'))`;
 }
 
 export function getTimestampSQL(field: string) {
