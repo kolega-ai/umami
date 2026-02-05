@@ -48,6 +48,25 @@ const TIMEZONE_OFFSET_REGEX = /^[+-](?:0[0-9]|1[0-4])(?::?[0-5][0-9])?$/;
 // Security: Valid date units (only allow keys from CLICKHOUSE_DATE_FORMATS)
 const VALID_DATE_UNITS = new Set(Object.keys(CLICKHOUSE_DATE_FORMATS));
 
+// Security: Valid base field names (without table prefixes) for date/timestamp operations
+const VALID_BASE_FIELDS = new Set([
+  'created_at',
+  'date_value',
+  'timestamp',
+  'min_time',
+  'max_time',
+]);
+
+// Security: Valid table prefixes for compound field names
+const VALID_TABLE_PREFIXES = new Set([
+  'website_event',
+  'website_revenue',  
+  'event_data',
+  'session_data',
+  'website_event_stats_hourly',
+  'revenue',
+]);
+
 /**
  * Security: Escape ClickHouse string literals by doubling single quotes
  * and removing potentially dangerous characters
@@ -110,6 +129,97 @@ function validateDateUnit(unit: string): string {
   return unit;
 }
 
+/**
+ * Security: Validate field parameter against whitelist to prevent SQL injection
+ * Supports both simple field names (e.g., 'created_at') and table-prefixed fields (e.g., 'website_event.created_at')
+ */
+function validateField(field: string): string {
+  if (!field || typeof field !== 'string') {
+    throw new Error('Field parameter is required and must be a string');
+  }
+  
+  // Trim whitespace and validate not empty
+  const trimmedField = field.trim();
+  if (trimmedField.length === 0) {
+    throw new Error('Field parameter cannot be empty');
+  }
+  
+  // Check for dangerous characters and patterns that could indicate SQL injection
+  const dangerousPatterns = [
+    /[;'"`\\]/,       // SQL terminators and quote characters
+    /--/,             // SQL line comments
+    /\/\*/,           // SQL block comments
+    /\*\//,           // SQL block comments end
+    /\bunion\b/i,     // UNION keyword
+    /\bdrop\b/i,      // DROP keyword
+    /\bdelete\b/i,    // DELETE keyword
+    /\binsert\b/i,    // INSERT keyword  
+    /\bupdate\b/i,    // UPDATE keyword
+    /\bexec\b/i,      // EXEC keyword
+    /\bselect\b/i,    // SELECT keyword (standalone)
+    /\bfrom\b/i,      // FROM keyword (standalone)
+    /\bwhere\b/i,     // WHERE keyword (standalone)
+    /[\x00-\x1f\x7f]/,// Control characters
+  ];
+  
+  for (const pattern of dangerousPatterns) {
+    if (pattern.test(trimmedField)) {
+      log('SQL injection attempt detected in field parameter:', field);
+      throw new Error(`Invalid field: contains forbidden characters or SQL keywords`);
+    }
+  }
+  
+  // Parse field to handle table.column format
+  const parts = trimmedField.split('.');
+  
+  if (parts.length === 1) {
+    // Simple field name (e.g., 'created_at')
+    const fieldName = parts[0];
+    
+    // Validate field name contains only valid identifier characters
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(fieldName)) {
+      log('Invalid field name format attempted:', field);
+      throw new Error(`Invalid field: '${fieldName}' contains invalid characters`);
+    }
+    
+    if (!VALID_BASE_FIELDS.has(fieldName)) {
+      log('Unrecognized field name attempted:', field);
+      throw new Error(`Invalid field: '${fieldName}' is not a recognized field name. Must be one of: ${Array.from(VALID_BASE_FIELDS).join(', ')}`);
+    }
+    
+    return trimmedField;
+    
+  } else if (parts.length === 2) {
+    // Table-prefixed field name (e.g., 'website_event.created_at')
+    const [tableName, fieldName] = parts;
+    
+    // Validate both parts contain only valid identifier characters
+    if (!/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(tableName) || !/^[a-zA-Z_][a-zA-Z0-9_]*$/.test(fieldName)) {
+      log('Invalid table.field format attempted:', field);
+      throw new Error(`Invalid field: contains invalid characters in table or field name`);
+    }
+    
+    // Validate table prefix is in whitelist
+    if (!VALID_TABLE_PREFIXES.has(tableName)) {
+      log('Unrecognized table prefix attempted:', field);
+      throw new Error(`Invalid field: '${tableName}' is not a recognized table prefix. Must be one of: ${Array.from(VALID_TABLE_PREFIXES).join(', ')}`);
+    }
+    
+    // Validate field name is in whitelist
+    if (!VALID_BASE_FIELDS.has(fieldName)) {
+      log('Unrecognized field name in table.field format attempted:', field);
+      throw new Error(`Invalid field: '${fieldName}' is not a recognized field name. Must be one of: ${Array.from(VALID_BASE_FIELDS).join(', ')}`);
+    }
+    
+    return trimmedField;
+    
+  } else {
+    // More than one dot indicates nested references, which are not allowed
+    log('Nested field reference attempted:', field);
+    throw new Error('Invalid field: nested table references (multiple dots) are not allowed');
+  }
+}
+
 const log = debug('umami:clickhouse');
 
 let clickhouse: ClickHouseClient;
@@ -164,6 +274,7 @@ function getDateStringSQL(data: any, unit: string = 'utc', timezone?: string) {
 
 function getDateSQL(field: string, unit: string, timezone?: string) {
   // Security: Validate and sanitize all user inputs to prevent SQL injection
+  const validField = validateField(field);
   const validUnit = validateDateUnit(unit);
   const validTimezone = validateTimezone(timezone);
   
@@ -171,12 +282,14 @@ function getDateSQL(field: string, unit: string, timezone?: string) {
     // Security: Escape the validated inputs as additional defense
     const escapedUnit = escapeClickHouseString(validUnit);
     const escapedTimezone = escapeClickHouseString(validTimezone);
-    return `toDateTime(date_trunc('${escapedUnit}', ${field}, '${escapedTimezone}'))`;
+    // Note: validField is not escaped because it's already validated against strict whitelist
+    // and escaping could break table.column syntax
+    return `toDateTime(date_trunc('${escapedUnit}', ${validField}, '${escapedTimezone}'))`;
   }
   
   // Security: Escape the validated unit as additional defense
   const escapedUnit = escapeClickHouseString(validUnit);
-  return `toDateTime(date_trunc('${escapedUnit}', ${field}))`;
+  return `toDateTime(date_trunc('${escapedUnit}', ${validField}))`;
 }
 
 function getSearchSQL(column: string, param: string = 'search'): string {
