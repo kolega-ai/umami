@@ -19,7 +19,9 @@ export function encrypt(value: any, secret: any) {
   const salt = crypto.randomBytes(SALT_LENGTH);
   const key = getKey(secret, salt);
 
-  const cipher = crypto.createCipheriv(ALGORITHM, key, iv);
+  const cipher = crypto.createCipheriv(ALGORITHM, key, iv, {
+    authTagLength: TAG_LENGTH
+  });
 
   const encrypted = Buffer.concat([cipher.update(String(value), 'utf8'), cipher.final()]);
 
@@ -37,7 +39,9 @@ export function decrypt(value: any, secret: any) {
 
   const key = getKey(secret, salt);
 
-  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv);
+  const decipher = crypto.createDecipheriv(ALGORITHM, key, iv, {
+    authTagLength: TAG_LENGTH
+  });
 
   decipher.setAuthTag(tag);
 
