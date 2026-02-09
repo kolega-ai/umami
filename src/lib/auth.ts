@@ -33,7 +33,18 @@ export async function checkAuth(request: Request) {
     }
   }
 
-  log({ token, payload, authKey, shareToken, user });
+  // Log only non-sensitive identifiers for debugging (only in development)
+  if (process.env.NODE_ENV !== 'production') {
+    log({
+      hasToken: !!token,
+      hasPayload: !!payload,
+      hasAuthKey: !!authKey,
+      hasShareToken: !!shareToken,
+      hasUser: !!user?.id,
+      userRoleType: user?.role ? 'role_assigned' : null,
+      authenticated: !!(user?.id || shareToken)
+    });
+  }
 
   if (!user?.id && !shareToken) {
     log('User not authorized');
@@ -74,7 +85,12 @@ export function parseShareToken(request: Request) {
   try {
     return parseToken(request.headers.get(SHARE_TOKEN_HEADER), secret());
   } catch (e) {
-    log(e);
+    // Only log error details in development environments
+    if (process.env.NODE_ENV !== 'production') {
+      log('Failed to parse share token:', e instanceof Error ? e.message : 'Unknown error');
+    } else {
+      log('Share token parsing failed');
+    }
     return null;
   }
 }
