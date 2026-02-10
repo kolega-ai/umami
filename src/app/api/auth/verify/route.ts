@@ -1,9 +1,13 @@
 import { parseRequest } from '@/lib/request';
 import { json } from '@/lib/response';
 import { getAllUserTeams } from '@/queries/prisma';
+import { AUTH_RATE_LIMITS } from '@/lib/rate-limit';
 
 export async function POST(request: Request) {
-  const { auth, error } = await parseRequest(request);
+  const { auth, error, rateLimitHeaders } = await parseRequest(request, undefined, {
+    skipAuth: false,
+    rateLimitConfig: AUTH_RATE_LIMITS['/api/auth/verify']
+  });
 
   if (error) {
     return error();
@@ -11,5 +15,14 @@ export async function POST(request: Request) {
 
   const teams = await getAllUserTeams(auth.user.id);
 
-  return json({ ...auth.user, teams });
+  return new Response(
+    JSON.stringify({ ...auth.user, teams }),
+    {
+      status: 200,
+      headers: {
+        'Content-Type': 'application/json',
+        ...rateLimitHeaders,
+      },
+    }
+  );
 }
