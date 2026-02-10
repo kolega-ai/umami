@@ -11,7 +11,7 @@ import { getWebsiteSegment } from '@/queries/prisma';
 export async function parseRequest(
   request: Request,
   schema?: any,
-  options?: { skipAuth: boolean },
+  options?: { skipAuth?: boolean; requireUserAuth?: boolean },
 ): Promise<any> {
   const url = new URL(request.url);
   let query = Object.fromEntries(url.searchParams);
@@ -33,10 +33,59 @@ export async function parseRequest(
   }
 
   if (!options?.skipAuth && !error) {
-    auth = await checkAuth(request);
+    if (options?.requireUserAuth) {
+      auth = await checkAuth(request);
+      if (!auth || auth.authMethod !== 'user') {
+        error = () => unauthorized();
+      }
+    } else {
+      // Default behavior: allow both user and share auth
+      auth = await checkAuth(request);
+      if (!auth) {
+        error = () => unauthorized();
+      }
+    }
+  }
 
-    if (!auth) {
-      error = () => unauthorized();
+  return { url, query, body, auth, error };
+}
+=======
+export async function parseRequest(
+  request: Request,
+  schema?: any,
+  options?: { skipAuth?: boolean; requireUserAuth?: boolean },
+): Promise<any> {
+  const url = new URL(request.url);
+  let query = Object.fromEntries(url.searchParams);
+  let body = await getJsonBody(request);
+  let error: () => undefined | undefined;
+  let auth = null;
+
+  if (schema) {
+    const isGet = request.method === 'GET';
+    const result = schema.safeParse(isGet ? query : body);
+
+    if (!result.success) {
+      error = () => badRequest(z.treeifyError(result.error));
+    } else if (isGet) {
+      query = result.data;
+    } else {
+      body = result.data;
+    }
+  }
+
+  if (!options?.skipAuth && !error) {
+    if (options?.requireUserAuth) {
+      auth = await checkAuth(request);
+      if (!auth || auth.authMethod !== 'user') {
+        error = () => unauthorized();
+      }
+    } else {
+      // Default behavior: allow both user and share auth
+      auth = await checkAuth(request);
+      if (!auth) {
+        error = () => unauthorized();
+      }
     }
   }
 

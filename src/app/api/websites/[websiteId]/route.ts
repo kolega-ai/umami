@@ -36,7 +36,7 @@ export async function POST(
     shareId: z.string().regex(SHARE_ID_REGEX).nullable().optional(),
   });
 
-  const { auth, body, error } = await parseRequest(request, schema);
+  const { auth, body, error } = await parseRequest(request, schema, { requireUserAuth: true });
 
   if (error) {
     return error();
@@ -66,7 +66,7 @@ export async function DELETE(
   request: Request,
   { params }: { params: Promise<{ websiteId: string }> },
 ) {
-  const { auth, error } = await parseRequest(request);
+  const { auth, error } = await parseRequest(request, undefined, { requireUserAuth: true });
 
   if (error) {
     return error();

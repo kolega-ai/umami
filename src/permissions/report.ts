@@ -3,18 +3,26 @@ import type { Auth } from '@/lib/types';
 import { canViewWebsite } from './website';
 
 export async function canViewReport(auth: Auth, report: Report) {
-  if (auth.user.isAdmin) {
+  // Admin users can view all reports (user auth only)
+  if (auth.authMethod === 'user' && auth.user?.isAdmin) {
     return true;
   }
 
-  if (auth.user.id === report.userId) {
+  // Report owner can view their own reports (user auth only)
+  if (auth.authMethod === 'user' && auth.user?.id === report.userId) {
     return true;
   }
 
+  // Check if user/share token can view the associated website
   return !!(await canViewWebsite(auth, report.websiteId));
 }
 
-export async function canUpdateReport({ user }: Auth, report: Report) {
+export async function canUpdateReport({ user, authMethod }: Auth, report: Report) {
+  // Only user authentication allowed for update operations
+  if (authMethod !== 'user' || !user) {
+    return false;
+  }
+
   if (user.isAdmin) {
     return true;
   }

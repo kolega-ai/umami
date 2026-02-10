@@ -33,15 +33,24 @@ export async function checkAuth(request: Request) {
     }
   }
 
-  log({ token, payload, authKey, shareToken, user });
-
-  if (!user?.id && !shareToken) {
-    log('User not authorized');
-    return null;
-  }
-
   if (user) {
     user.isAdmin = user.role === ROLES.admin;
+  }
+
+  // Determine authentication method with priority: user > share > none
+  let authMethod: 'user' | 'share' | 'none' = 'none';
+  
+  if (user?.id) {
+    authMethod = 'user';
+  } else if (shareToken) {
+    authMethod = 'share';
+  }
+
+  log({ token, payload, authKey, shareToken, user, authMethod });
+
+  if (authMethod === 'none') {
+    log('No valid authentication found');
+    return null;
   }
 
   return {
@@ -49,7 +58,30 @@ export async function checkAuth(request: Request) {
     authKey,
     shareToken,
     user,
+    authMethod,
   };
+}
+
+export async function requireUserAuth(request: Request) {
+  const auth = await checkAuth(request);
+  
+  if (!auth || auth.authMethod !== 'user') {
+    log('User authentication required but not provided');
+    return null;
+  }
+  
+  return auth;
+}
+
+export async function allowShareAuth(request: Request) {
+  const auth = await checkAuth(request);
+  
+  if (!auth || auth.authMethod === 'none') {
+    log('Authentication required but not provided');
+    return null;
+  }
+  
+  return auth;
 }
 
 export async function saveAuth(data: any, expire = 0) {

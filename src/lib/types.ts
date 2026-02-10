@@ -21,6 +21,7 @@ export interface Auth {
   shareToken?: {
     websiteId: string;
   };
+  authMethod: 'user' | 'share' | 'none';
 }
 
 export interface Filter {
