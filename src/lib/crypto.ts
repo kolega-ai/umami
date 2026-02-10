@@ -53,7 +53,33 @@ export function md5(...args: string[]) {
 }
 
 export function secret() {
-  return hash(process.env.APP_SECRET || process.env.DATABASE_URL);
+  const appSecret = process.env.APP_SECRET;
+  
+  if (!appSecret) {
+    throw new Error(
+      'SECURITY ERROR: APP_SECRET environment variable is required but not set. ' +
+      'This is a critical security configuration. ' +
+      'Generate a secure secret using: openssl rand -base64 32'
+    );
+  }
+  
+  // Additional validation to ensure it's not accidentally set to DATABASE_URL
+  if (appSecret === process.env.DATABASE_URL) {
+    throw new Error(
+      'SECURITY ERROR: APP_SECRET must not be the same as DATABASE_URL. ' +
+      'This is a security vulnerability. Please generate a unique secret.'
+    );
+  }
+  
+  // Ensure minimum entropy
+  if (appSecret.length < 32) {
+    throw new Error(
+      'SECURITY ERROR: APP_SECRET must be at least 32 characters long for security. ' +
+      'Generate a secure secret using: openssl rand -base64 32'
+    );
+  }
+  
+  return hash(appSecret);
 }
 
 export function uuid(...args: any) {
