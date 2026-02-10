@@ -53,7 +53,16 @@ export function md5(...args: string[]) {
 }
 
 export function secret() {
-  return hash(process.env.APP_SECRET || process.env.DATABASE_URL);
+  const appSecret = process.env.APP_SECRET;
+  
+  if (!appSecret) {
+    throw new Error(
+      'APP_SECRET environment variable is required for cryptographic operations. ' +
+      'Please set APP_SECRET to a strong, randomly generated secret.'
+    );
+  }
+  
+  return hash(appSecret);
 }
 
 export function uuid(...args: any) {
