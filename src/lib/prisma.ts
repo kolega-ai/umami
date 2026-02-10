@@ -19,6 +19,136 @@ const PRISMA_LOG_OPTIONS = {
   ],
 };
 
+// Security: Whitelist of valid PostgreSQL timezones
+const VALID_TIMEZONES = new Set([
+  'UTC',
+  'GMT',
+  'US/Eastern',
+  'US/Central',
+  'US/Mountain',
+  'US/Pacific',
+  'America/New_York',
+  'America/Chicago',
+  'America/Denver',
+  'America/Los_Angeles',
+  'America/Toronto',
+  'America/Vancouver',
+  'America/Mexico_City',
+  'America/Sao_Paulo',
+  'America/Argentina/Buenos_Aires',
+  'Europe/London',
+  'Europe/Paris',
+  'Europe/Berlin',
+  'Europe/Rome',
+  'Europe/Madrid',
+  'Europe/Amsterdam',
+  'Europe/Brussels',
+  'Europe/Vienna',
+  'Europe/Zurich',
+  'Europe/Stockholm',
+  'Europe/Copenhagen',
+  'Europe/Helsinki',
+  'Europe/Oslo',
+  'Europe/Warsaw',
+  'Europe/Prague',
+  'Europe/Budapest',
+  'Europe/Bucharest',
+  'Europe/Athens',
+  'Europe/Istanbul',
+  'Europe/Moscow',
+  'Asia/Tokyo',
+  'Asia/Shanghai',
+  'Asia/Hong_Kong',
+  'Asia/Singapore',
+  'Asia/Seoul',
+  'Asia/Taipei',
+  'Asia/Bangkok',
+  'Asia/Jakarta',
+  'Asia/Manila',
+  'Asia/Mumbai',
+  'Asia/Dubai',
+  'Asia/Jerusalem',
+  'Australia/Sydney',
+  'Australia/Melbourne',
+  'Australia/Perth',
+  'Pacific/Auckland',
+  'Pacific/Honolulu',
+  'Africa/Cairo',
+  'Africa/Johannesburg',
+  'Africa/Lagos',
+]);
+
+// Security: Valid date units for date_trunc function
+const VALID_DATE_UNITS = new Set([
+  'microseconds',
+  'milliseconds',
+  'second',
+  'minute',
+  'hour',
+  'day',
+  'week',
+  'month',
+  'quarter',
+  'year',
+  'decade',
+  'century',
+  'millennium',
+]);
+
+// Security: Validate field name to prevent SQL injection
+function validateFieldName(field: string): boolean {
+  if (!field || typeof field !== 'string') {
+    return false;
+  }
+  // Field names should only contain alphanumeric, underscore, and dot (for table.column)
+  const fieldRegex = /^[a-zA-Z_][a-zA-Z0-9_]*(\.[a-zA-Z_][a-zA-Z0-9_]*)?$/;
+  return fieldRegex.test(field);
+}
+
+// Security: Validate and sanitize timezone
+function validateTimezone(timezone?: string): string | null {
+  if (!timezone || typeof timezone !== 'string') {
+    return null;
+  }
+
+  // Check against whitelist of known timezones
+  if (VALID_TIMEZONES.has(timezone)) {
+    return timezone;
+  }
+
+  // Check for UTC offset format (e.g., '+05:30', '-08:00')
+  const utcOffsetRegex = /^[+-](?:0[0-9]|1[0-4]):[0-5][0-9]$/;
+  if (utcOffsetRegex.test(timezone)) {
+    return timezone;
+  }
+
+  // Check for simple offset format (e.g., '+05', '-08')
+  const simpleOffsetRegex = /^[+-](?:0[0-9]|1[0-4])$/;
+  if (simpleOffsetRegex.test(timezone)) {
+    return timezone;
+  }
+
+  // Log potential SQL injection attempt
+  log('Invalid timezone provided:', timezone);
+  
+  return null;
+}
+
+// Security: Validate date unit
+function validateDateUnit(unit: string): string | null {
+  if (!unit || typeof unit !== 'string') {
+    return null;
+  }
+  
+  const lowerUnit = unit.toLowerCase();
+  if (VALID_DATE_UNITS.has(lowerUnit)) {
+    return lowerUnit;
+  }
+  
+  log('Invalid date unit provided:', unit);
+  return null;
+}
+
 const DATE_FORMATS = {
   minute: 'YYYY-MM-DD HH24:MI:00',
   hour: 'YYYY-MM-DD HH24:00:00',
@@ -36,38 +166,145 @@ const DATE_FORMATS_UTC = {
 };
 
 function getAddIntervalQuery(field: string, interval: string): string {
+  // Security: Validate field name to prevent SQL injection
+  if (!validateFieldName(field)) {
+    throw new Error(`Invalid field name: ${field}`);
+  }
+
+  // Security: Validate interval format (PostgreSQL interval syntax)
+  const intervalRegex = /^(\d+\s+(microseconds?|milliseconds?|seconds?|minutes?|hours?|days?|weeks?|months?|years?))(\s+\d+\s+(microseconds?|milliseconds?|seconds?|minutes?|hours?|days?|weeks?|months?|years?))*$/i;
+  if (!intervalRegex.test(interval.trim())) {
+    throw new Error(`Invalid interval format: ${interval}`);
+  }
+
   return `${field} + interval '${interval}'`;
 }
 
 function getDayDiffQuery(field1: string, field2: string): string {
+  // Security: Validate both field names to prevent SQL injection
+  if (!validateFieldName(field1)) {
+    throw new Error(`Invalid field name: ${field1}`);
+  }
+  if (!validateFieldName(field2)) {
+    throw new Error(`Invalid field name: ${field2}`);
+  }
+
   return `${field1}::date - ${field2}::date`;
 }
 
 function getCastColumnQuery(field: string, type: string): string {
+  // Security: Validate field name to prevent SQL injection
+  if (!validateFieldName(field)) {
+    throw new Error(`Invalid field name: ${field}`);
+  }
+
+  // Security: Validate PostgreSQL data type
+  const validTypes = new Set([
+    'bigint', 'int8', 'bigserial', 'serial8', 'bit', 'boolean', 'bool', 'box', 'bytea',
+    'character', 'char', 'character varying', 'varchar', 'cidr', 'circle', 'date',
+    'double precision', 'float8', 'inet', 'integer', 'int', 'int4', 'interval',
+    'json', 'jsonb', 'line', 'lseg', 'macaddr', 'macaddr8', 'money', 'numeric',
+    'decimal', 'path', 'pg_lsn', 'point', 'polygon', 'real', 'float4', 'smallint',
+    'int2', 'smallserial', 'serial2', 'serial', 'serial4', 'text', 'time',
+    'timestamp', 'timestamptz', 'timetz', 'tsquery', 'tsvector', 'txid_snapshot',
+    'uuid', 'xml'
+  ]);
+  
+  if (!validTypes.has(type.toLowerCase())) {
+    throw new Error(`Invalid PostgreSQL data type: ${type}`);
+  }
+
   return `${field}::${type}`;
 }
 
 function getDateSQL(field: string, unit: string, timezone?: string): string {
-  if (timezone && timezone !== 'utc') {
-    return `to_char(date_trunc('${unit}', ${field} at time zone '${timezone}'), '${DATE_FORMATS[unit]}')`;
+  // Security: Validate all inputs to prevent SQL injection
+  if (!validateFieldName(field)) {
+    throw new Error(`Invalid field name: ${field}`);
   }
 
-  return `to_char(date_trunc('${unit}', ${field}), '${DATE_FORMATS_UTC[unit]}')`;
+  const validatedUnit = validateDateUnit(unit);
+  if (!validatedUnit) {
+    throw new Error(`Invalid date unit: ${unit}`);
+  }
+
+  // Security: If timezone is provided but invalid, throw error instead of falling back
+  if (timezone && typeof timezone === 'string' && timezone !== '') {
+    const validatedTimezone = validateTimezone(timezone);
+    if (!validatedTimezone) {
+      throw new Error(`Invalid timezone: ${timezone}`);
+    }
+    
+    // Use validated timezone
+    if (validatedTimezone.toLowerCase() !== 'utc') {
+      const format = DATE_FORMATS[validatedUnit];
+      if (!format) {
+        throw new Error(`No format defined for unit: ${validatedUnit}`);
+      }
+      return `to_char(date_trunc('${validatedUnit}', ${field} at time zone '${validatedTimezone}'), '${format}')`;
+    }
+  }
+
+  // Default to UTC behavior when no timezone is provided or timezone is 'utc'
+  const formatUtc = DATE_FORMATS_UTC[validatedUnit];
+  if (!formatUtc) {
+    throw new Error(`No UTC format defined for unit: ${validatedUnit}`);
+  }
+  return `to_char(date_trunc('${validatedUnit}', ${field}), '${formatUtc}')`;
 }
 
 function getDateWeeklySQL(field: string, timezone?: string) {
-  return `concat(extract(dow from (${field} at time zone '${timezone}')), ':', to_char((${field} at time zone '${timezone}'), 'HH24'))`;
+  // Security: Validate field name to prevent SQL injection
+  if (!validateFieldName(field)) {
+    throw new Error(`Invalid field name: ${field}`);
+  }
+
+  // Security: If timezone is provided but invalid, throw error instead of falling back
+  if (timezone && typeof timezone === 'string' && timezone !== '') {
+    const validatedTimezone = validateTimezone(timezone);
+    if (!validatedTimezone) {
+      throw new Error(`Invalid timezone: ${timezone}`);
+    }
+    return `concat(extract(dow from (${field} at time zone '${validatedTimezone}')), ':', to_char((${field} at time zone '${validatedTimezone}'), 'HH24'))`;
+  }
+
+  // Default to UTC when no timezone is provided
+  return `concat(extract(dow from (${field} at time zone 'UTC')), ':', to_char((${field} at time zone 'UTC'), 'HH24'))`;
 }
 
 export function getTimestampSQL(field: string) {
+  // Security: Validate field name to prevent SQL injection
+  if (!validateFieldName(field)) {
+    throw new Error(`Invalid field name: ${field}`);
+  }
+
   return `floor(extract(epoch from ${field}))`;
 }
 
 function getTimestampDiffSQL(field1: string, field2: string): string {
+  // Security: Validate both field names to prevent SQL injection
+  if (!validateFieldName(field1)) {
+    throw new Error(`Invalid field name: ${field1}`);
+  }
+  if (!validateFieldName(field2)) {
+    throw new Error(`Invalid field name: ${field2}`);
+  }
+
   return `floor(extract(epoch from (${field2} - ${field1})))`;
 }
 
 function getSearchSQL(column: string, param: string = 'search'): string {
+  // Security: Validate column name to prevent SQL injection
+  if (!validateFieldName(column)) {
+    throw new Error(`Invalid column name: ${column}`);
+  }
+
+  // Security: Validate parameter name (should be alphanumeric and underscore only)
+  const paramRegex = /^[a-zA-Z_][a-zA-Z0-9_]*$/;
+  if (!paramRegex.test(param)) {
+    throw new Error(`Invalid parameter name: ${param}`);
+  }
+
   return `and ${column} ilike {{${param}}}`;
 }
 
