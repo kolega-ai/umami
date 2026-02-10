@@ -41,6 +41,8 @@
     "clean-lang": "prettier --write ./public/intl/**/*.json",
     "download-country-names": "node scripts/download-country-names.js",
     "download-language-names": "node scripts/download-language-names.js",
+    "setup-admin": "node scripts/setup-admin.js",
+    "migrate-admin-security": "node scripts/migrate-admin-security.js",
     "change-password": "node scripts/change-password.js",
     "prepare": "node -e \"if (process.env.NODE_ENV !== 'production'){process.exit(1)} \" || husky install",
     "postbuild": "node scripts/postbuild.js",
